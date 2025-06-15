@@ -1,0 +1,2 @@
+Best diabetes model: models/diabetes_model_lr
+Best heart model: models/heart_model_lr

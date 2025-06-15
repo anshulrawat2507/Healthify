@@ -1,7 +1,3 @@
-# Generated data and models
-data/processed/
-models/
-
 # Python cache
 __pycache__/
 *.py[cod]
