@@ -7,31 +7,83 @@ import time
 import os
 import sys
 
-# Set HADOOP_HOME environment variable - use environment variables instead of hardcoded paths
-hadoop_home = os.environ.get('HADOOP_HOME', '')
+# Get the project root directory (current directory)
+PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
+print(f"Project root directory: {PROJECT_ROOT}")
 
-# Add Hadoop bin to PATH only if environment variable exists
-if hadoop_home:
-    hadoop_bin = os.path.join(hadoop_home, 'bin')
-    os.environ['PATH'] = hadoop_bin + os.pathsep + os.environ['PATH']
+# Create necessary directories if they don't exist
+os.makedirs(os.path.join(PROJECT_ROOT, "models"), exist_ok=True)
+os.makedirs(os.path.join(PROJECT_ROOT, "data", "processed"), exist_ok=True)
 
-    # Set hadoop.home.dir system property for Java
-    if 'JAVA_OPTS' not in os.environ:
-        os.environ['JAVA_OPTS'] = ''
-    os.environ['JAVA_OPTS'] = os.environ['JAVA_OPTS'] + f' -Dhadoop.home.dir={hadoop_home}'
-
+# Only set Hadoop/Java paths if they exist
+hadoop_path = r'C:\hadoop'
+if os.path.exists(hadoop_path):
+    # Set HADOOP_HOME environment variable
+    os.environ['HADOOP_HOME'] = hadoop_path
+    print(f"Found Hadoop at: {hadoop_path}")
+    
+    # Add Hadoop bin to PATH
+    hadoop_bin = os.path.join(os.environ['HADOOP_HOME'], 'bin')
+    if os.path.exists(hadoop_bin):
+        os.environ['PATH'] = hadoop_bin + os.pathsep + os.environ['PATH']
+        
+        # Set hadoop.home.dir system property for Java
+        if 'JAVA_OPTS' not in os.environ:
+            os.environ['JAVA_OPTS'] = ''
+        os.environ['JAVA_OPTS'] = os.environ['JAVA_OPTS'] + ' -Dhadoop.home.dir=C:\\hadoop'
+    else:
+        print(f"Warning: Hadoop bin directory not found at {hadoop_bin}")
+else:
+    print(f"Warning: Hadoop directory not found at {hadoop_path}")
+    print("Continuing without Hadoop configuration...")
 
 def initialize_spark():
     """Initialize Spark session"""
-    return SparkSession.builder \
-        .appName("HEALTHIFY - Model Training") \
-        .config("spark.driver.memory", "2g") \
-        .getOrCreate()
+    try:
+        print("Initializing Spark session...")
+        # Add more configurations to help debug issues
+        spark = SparkSession.builder \
+            .appName("HEALTHIFY - Model Training") \
+            .config("spark.driver.memory", "2g") \
+            .config("spark.driver.extraJavaOptions", "-XX:+PrintGCDetails -XX:+PrintGCTimeStamps") \
+            .config("spark.python.worker.reuse", "false") \
+            .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
+            .getOrCreate()
+            
+        return spark
+    except Exception as e:
+        print(f"Error initializing Spark: {e}")
+        print("Attempting to fallback to a simpler Spark configuration...")
+        
+        try:
+            # Try with minimal config
+            spark = SparkSession.builder \
+                .appName("HEALTHIFY - Minimal") \
+                .config("spark.driver.memory", "1g") \
+                .getOrCreate()
+            return spark
+        except Exception as e2:
+            print(f"Fatal error initializing Spark with minimal config: {e2}")
+            print("Cannot proceed without Spark. Please check your Java/Spark installation.")
+            sys.exit(1)
 
 def load_processed_data(spark, name):
     """Load processed data from parquet files"""
     # Load the data
-    df = spark.read.parquet(f"data/processed/{name}")
+    data_path = os.path.join(PROJECT_ROOT, "data", "processed", name)
+    print(f"Loading processed data from {data_path}")
+    
+    if not os.path.exists(data_path):
+        print(f"Error: Processed data not found at {data_path}")
+        fallback_path = os.path.join(PROJECT_ROOT, "data", "processed", f"{name}_pandas.csv")
+        if os.path.exists(fallback_path):
+            print(f"Found pandas-processed data at {fallback_path}, trying to load it instead")
+            return spark.read.option("header", "true").option("inferSchema", "true").csv(fallback_path)
+        else:
+            print(f"No fallback data found at {fallback_path}")
+            sys.exit(1)
+    
+    df = spark.read.parquet(data_path)
     
     # If the features column is not a proper Vector type, convert it
     if "features" in df.columns:
@@ -51,8 +103,6 @@ def load_processed_data(spark, name):
             df = df.withColumn("features", to_vector_udf("features"))
     
     return df
-
-
 
 def train_logistic_regression(train_data, test_data, label_col):
     """Train logistic regression model with hyperparameter tuning"""
@@ -146,6 +196,8 @@ def train_random_forest(train_data, test_data, label_col):
 
 def save_model(model, model_path):
     """Save model to disk"""
+    # Ensure the directory exists
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
     model.write().overwrite().save(model_path)
     print(f"Model saved to {model_path}")
 
@@ -155,7 +207,8 @@ def main():
     spark = initialize_spark()
     
     # Create directories if they don't exist
-    os.makedirs("models", exist_ok=True)
+    models_dir = os.path.join(PROJECT_ROOT, "models")
+    os.makedirs(models_dir, exist_ok=True)
     
     # Train diabetes model
     print("\n=== Training Diabetes Model ===")
@@ -164,11 +217,11 @@ def main():
     
     # Train logistic regression model for diabetes
     diabetes_lr_model = train_logistic_regression(diabetes_train_data, diabetes_test_data, "Outcome")
-    save_model(diabetes_lr_model, "models/diabetes_model_lr")
+    save_model(diabetes_lr_model, os.path.join(models_dir, "diabetes_model_lr"))
     
     # Train random forest model for diabetes
     diabetes_rf_model = train_random_forest(diabetes_train_data, diabetes_test_data, "Outcome")
-    save_model(diabetes_rf_model, "models/diabetes_model_rf")
+    save_model(diabetes_rf_model, os.path.join(models_dir, "diabetes_model_rf"))
     
     # Train heart attack model
     print("\n=== Training Heart Attack Model ===")
@@ -177,11 +230,11 @@ def main():
     
     # Train logistic regression model for heart attack
     heart_lr_model = train_logistic_regression(heart_train_data, heart_test_data, "Heart_Attack_Risk")
-    save_model(heart_lr_model, "models/heart_model_lr")
+    save_model(heart_lr_model, os.path.join(models_dir, "heart_model_lr"))
     
     # Train random forest model for heart attack
     heart_rf_model = train_random_forest(heart_train_data, heart_test_data, "Heart_Attack_Risk")
-    save_model(heart_rf_model, "models/heart_model_rf")
+    save_model(heart_rf_model, os.path.join(models_dir, "heart_model_rf"))
     
     # Compare models and select the best one for each prediction task
     print("\n=== Model Comparison ===")
@@ -198,11 +251,11 @@ def main():
     if diabetes_rf_eval > diabetes_lr_eval:
         print("Random Forest performs better for diabetes prediction")
         best_diabetes_model = diabetes_rf_model
-        best_diabetes_model_path = "models/diabetes_model_rf"
+        best_diabetes_model_path = os.path.join(models_dir, "diabetes_model_rf")
     else:
         print("Logistic Regression performs better for diabetes prediction")
         best_diabetes_model = diabetes_lr_model
-        best_diabetes_model_path = "models/diabetes_model_lr"
+        best_diabetes_model_path = os.path.join(models_dir, "diabetes_model_lr")
     
     # For heart attack prediction - use heart_test_data
     heart_lr_eval = BinaryClassificationEvaluator(labelCol="Heart_Attack_Risk").evaluate(
@@ -216,14 +269,14 @@ def main():
     if heart_rf_eval > heart_lr_eval:
         print("Random Forest performs better for heart attack prediction")
         best_heart_model = heart_rf_model
-        best_heart_model_path = "models/heart_model_rf"
+        best_heart_model_path = os.path.join(models_dir, "heart_model_rf")
     else:
         print("Logistic Regression performs better for heart attack prediction")
         best_heart_model = heart_lr_model
-        best_heart_model_path = "models/heart_model_lr"
+        best_heart_model_path = os.path.join(models_dir, "heart_model_lr")
     
     # Save links to best models
-    with open("models/best_models.txt", "w") as f:
+    with open(os.path.join(models_dir, "best_models.txt"), "w") as f:
         f.write(f"Best diabetes model: {best_diabetes_model_path}\n")
         f.write(f"Best heart model: {best_heart_model_path}\n")
     
@@ -232,4 +285,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main() 
