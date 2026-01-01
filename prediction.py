@@ -1,10 +1,23 @@
-from pyspark.sql import SparkSession
-from pyspark.ml.classification import LogisticRegressionModel, RandomForestClassificationModel
-from pyspark.ml.linalg import Vectors
 import os
 import sys
 import threading
 import time
+
+# PySpark is optional at runtime.
+# On Python 3.12+, some PySpark code paths can fail to import due to the removal of `distutils`.
+# This app has a rule-based fallback, so we should not hard-fail on import.
+try:
+    from pyspark.sql import SparkSession
+    from pyspark.ml.classification import LogisticRegressionModel, RandomForestClassificationModel
+    from pyspark.ml.linalg import Vectors
+    _PYSPARK_AVAILABLE = True
+except Exception as _pyspark_import_error:  # pragma: no cover
+    SparkSession = None
+    LogisticRegressionModel = None
+    RandomForestClassificationModel = None
+    Vectors = None
+    _PYSPARK_AVAILABLE = False
+    _PYSPARK_IMPORT_ERROR = _pyspark_import_error
 
 # Get the project root directory (current directory)
 HEALTHIFY_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -16,6 +29,9 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 
 def initialize_spark(timeout=10):
     """Initialize Spark session with timeout"""
+    if not _PYSPARK_AVAILABLE:
+        return None
+
     # Create events for signaling
     spark_ready = threading.Event()
     spark_failed = threading.Event()
@@ -78,6 +94,8 @@ def initialize_spark(timeout=10):
 
 def create_feature_vector(spark, features):
     """Create a DataFrame with feature vector"""
+    if not _PYSPARK_AVAILABLE:
+        raise RuntimeError(f"PySpark is unavailable: {_PYSPARK_IMPORT_ERROR}")
     # Create DataFrame with feature vector
     data = [(Vectors.dense(features),)]
     return spark.createDataFrame(data, ["features"])
